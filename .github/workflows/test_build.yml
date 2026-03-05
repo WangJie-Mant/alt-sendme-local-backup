@@ -32,9 +32,8 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli
 
-      - name: Install WebView2
-        run: choco install microsoft-edge-webview2-runtime -y
-        
+      - name: Install WIX
+        run: choco install wixtoolset -y
       - name: Build Tauri
         run: |
           cargo tauri build --release --bundles nsis,msi
