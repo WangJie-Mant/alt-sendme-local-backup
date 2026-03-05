@@ -2,6 +2,9 @@ name: Test Windows Build
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
 
 jobs:
   build:
@@ -10,16 +13,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
           node-version: 20
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: install frontend deps
-        run: cd web-app && npm install
+      - name: Install NSIS
+        run: choco install nsis -y
 
-      - name: build tauri
+      - name: Install frontend deps
+        run: |
+          cd web-app
+          npm install
+
+      - name: Build Tauri
         run: |
           cd src-tauri
-          npm run build
+          npm run tauri build
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-windows-build
+          path: src-tauri/target/release/bundle
