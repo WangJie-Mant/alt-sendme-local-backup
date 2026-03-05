@@ -1,0 +1,25 @@
+name: Test Windows Build
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: install frontend deps
+        run: cd web-app && npm install
+
+      - name: build tauri
+        run: |
+          cd src-tauri
+          npm run build
