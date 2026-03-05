@@ -140,7 +140,10 @@ export function useReceiver(): UseReceiverReturn {
 	}, [savePath])
 
 	useEffect(() => {
+		const seq = ++previewRequestSeqRef.current
+
 		if (isReceiving) {
+			setIsPreviewLoading(false)
 			return
 		}
 
@@ -151,8 +154,9 @@ export function useReceiver(): UseReceiverReturn {
 			return
 		}
 
-		const seq = ++previewRequestSeqRef.current
 		setIsPreviewLoading(true)
+		// Clear stale preview while typing/fetching
+		setPreviewMetadata(null)
 
 		const timer = window.setTimeout(async () => {
 			try {
@@ -387,6 +391,8 @@ export function useReceiver(): UseReceiverReturn {
 			setTransferProgress(null)
 			setTransferStartTime(null)
 			setPreviewMetadata(null)
+			setIsPreviewLoading(false)
+			previewRequestSeqRef.current += 1
 			folderOpenTriggeredRef.current = false
 
 			await invoke<string>('receive_file', {
@@ -413,6 +419,7 @@ export function useReceiver(): UseReceiverReturn {
 		setFileNames([])
 		setPreviewMetadata(null)
 		setIsPreviewLoading(false)
+		previewRequestSeqRef.current += 1
 		folderOpenTriggeredRef.current = false
 	}
 

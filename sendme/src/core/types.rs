@@ -72,7 +72,7 @@ impl From<RelayModeOption> for iroh::RelayMode {
 
 /// # Description
 /// Represents metadata about a file being shared,
-/// including fileName, size, optional thumbnail, description, and MIME type.
+/// including file_name, size, optional thumbnail, description, and MIME type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
     pub file_name: String,
