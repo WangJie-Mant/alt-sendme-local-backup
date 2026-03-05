@@ -1,5 +1,5 @@
 use crate::core::types::{
-    apply_options, get_or_create_secret, AddrInfoOptions, AppHandle, FileMetadata, SendOptions,
+    apply_options, get_or_create_secret, AddrInfoOptions, AppHandle, FileMetadata, ShareConfig, SendOptions,
     SendResult,
 };
 use anyhow::Context;
@@ -29,105 +29,7 @@ use tokio::{select, sync::mpsc};
 use tracing::trace;
 use walkdir::WalkDir;
 
-// To avoid encoding thumbnail into ticket causing excessively long tickets, we use a custom metadata protocol to
-// send metadata seprately from the file data. After the receive end sticks the ticket, a seprate connection will
-// be made to fetch the metadata.
 pub const METADATA_ALPN: &[u8] = b"sendme/metadata/1";
-
-#[derive(Debug, Clone)]
-struct MetadataProtocol {
-    metadata: Option<FileMetadata>,
-}
-
-impl ProtocolHandler for MetadataProtocol {
-    /// # Description
-    /// Handles incoming connections on the metadata protocol.
-    /// It reads a metadata request marker (1 byte) from client, responds with a length-prefixed JSON metadata payload, and waits for the client to close the connection before finishing.
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        let (mut send_stream, mut recv_stream) =
-            match tokio::time::timeout(Duration::from_secs(30), connection.accept_bi()).await {
-                Ok(Ok(streams)) => streams,
-                Ok(Err(err)) => return Err(err.into()),
-                Err(_) => {
-                    tracing::debug!("metadata accept_bi timeout (benign)");
-                    return Ok(());
-                }
-            };
-
-        tracing::info!("metadata protocol bi stream accepted");
-
-        let mut req = [0u8; 1];
-        tokio::time::timeout(Duration::from_secs(10), recv_stream.read_exact(&mut req))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    ErrorKind::TimedOut,
-                    "metadata request read timeout",
-                ))
-            })?
-            .map_err(AcceptError::from_err)?;
-
-        // Validate request marker (1 means metadata request)
-        if req[0] != 1 {
-            return Err(AcceptError::from_err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!("invalid metadata request marker: {}", req[0]),
-            )));
-        }
-
-        tracing::debug!("metadata request marker received");
-
-        let payload = self.metadata.clone().unwrap_or(FileMetadata {
-            file_name: "Unknown file".to_string(),
-            size: 0,
-            thumbnail: None,
-            description: None,
-            mime_type: None,
-        });
-
-        let meta_bytes = serde_json::to_vec(&payload).map_err(AcceptError::from_err)?;
-        const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
-        if meta_bytes.len() > MAX_METADATA_BYTES {
-            return Err(AcceptError::from_err(std::io::Error::new(
-                ErrorKind::InvalidData,
-                format!("metadata payload too large: {} bytes", meta_bytes.len()),
-            )));
-        }
-        let len_prefix = (meta_bytes.len() as u32).to_be_bytes();
-
-        // Send 4 bytes of length prefix followed by the JSON metadata
-        tokio::time::timeout(Duration::from_secs(10), send_stream.write_all(&len_prefix))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    ErrorKind::TimedOut,
-                    "metadata length write timeout",
-                ))
-            })?
-            .map_err(AcceptError::from_err)?;
-        tokio::time::timeout(Duration::from_secs(20), send_stream.write_all(&meta_bytes))
-            .await
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::new(
-                    ErrorKind::TimedOut,
-                    "metadata body write timeout",
-                ))
-            })?
-            .map_err(AcceptError::from_err)?;
-
-        send_stream.finish().map_err(AcceptError::from_err)?;
-
-        // Wait for the client to close its receive stream (which means it got the data).
-        // This prevents tearing down the QUIC connection before the data buffers are flushed.
-        // We give it 30s which is more than the client's read timeout.
-        let mut eof_buf = [0u8; 1];
-        let _ = tokio::time::timeout(Duration::from_secs(30), recv_stream.read(&mut eof_buf)).await;
-
-        tracing::info!(bytes = meta_bytes.len(), "metadata sent");
-
-        Ok(())
-    }
-}
 
 fn emit_event(app_handle: &AppHandle, event_name: &str) {
     if let Some(handle) = app_handle {
@@ -171,7 +73,7 @@ pub async fn start_share(
     path: PathBuf,
     options: SendOptions,
     app_handle: AppHandle,
-    metadata: Option<FileMetadata>,
+    metadata: Option<ShareConfig>,
 ) -> anyhow::Result<SendResult> {
     let secret_key = get_or_create_secret()?;
 
@@ -239,7 +141,34 @@ pub async fn start_share(
         let import_result = import(path2, blobs.store()).await?;
         let dt = t0.elapsed();
 
-        let (ref _temp_tag, size, ref _collection) = import_result;
+        let (file_temp_tag, size, _collection) = import_result;
+        
+        let mut preview_hash = None;
+        if let Some(config) = &metadata {
+            if let Some(b64) = &config.thumbnail_base64 {
+                if let Ok(bytes) = data_encoding::BASE64.decode(b64.as_bytes()) {
+                    if let Ok(tag) = blobs.store().add_bytes(bytes).await {
+                        preview_hash = Some(tag.hash);
+                    }
+                }
+            }
+        }
+
+        let actual_metadata = FileMetadata {
+            file_hash: file_temp_tag.hash(),
+            preview_hash,
+            file_name: metadata.as_ref().map(|m| m.file_name.clone()).unwrap_or_else(|| "Unknown".to_string()),
+            size,
+            mime_type: metadata.as_ref().and_then(|m| m.mime_type.clone()),
+            preview_mime: metadata.as_ref().and_then(|m| m.thumbnail_base64.as_ref().map(|_| "image/jpeg".to_string())),
+            description: metadata.as_ref().and_then(|m| m.description.clone()),
+        };
+
+        let metadata_bytes = serde_json::to_vec(&actual_metadata)?;
+        let metadata_tag = blobs.store().add_bytes(metadata_bytes).await
+            .context("failed to add metadata blob")?;
+        let metadata_hash = metadata_tag.hash;
+        
         let progress_handle = n0_future::task::spawn(show_provide_progress_with_logging(
             progress_rx,
             app_handle_clone,
@@ -249,7 +178,6 @@ pub async fn start_share(
 
         let router = iroh::protocol::Router::builder(endpoint)
             .accept(iroh_blobs::ALPN, blobs.clone())
-            .accept(METADATA_ALPN, MetadataProtocol { metadata })
             .spawn();
 
         let ep = router.endpoint();
@@ -262,7 +190,9 @@ pub async fn start_share(
 
         anyhow::Ok((
             router,
-            import_result,
+            metadata_hash,
+            file_temp_tag, // we keep the file temp tag to satisfy SendResult
+            size,
             dt,
             blobs_data_dir2,
             store,
@@ -270,23 +200,22 @@ pub async fn start_share(
         ))
     };
 
-    let (router, (temp_tag, size, _collection), _dt, _blobs_data_dir, store, progress_handle) = select! {
+    let (router, metadata_hash, temp_tag, size, _dt, _blobs_data_dir, store, progress_handle) = select! {
         x = setup => x?,
         _ = tokio::signal::ctrl_c() => {
             anyhow::bail!("Operation cancelled");
         }
     };
-    let hash = temp_tag.hash();
 
     let mut addr = router.endpoint().addr();
 
     apply_options(&mut addr, options.ticket_type);
 
-    let ticket = BlobTicket::new(addr, hash, BlobFormat::HashSeq);
+    let ticket = BlobTicket::new(addr, metadata_hash, BlobFormat::Raw);
 
     Ok(SendResult {
         ticket: ticket.to_string(),
-        hash: hash.to_hex().to_string(),
+        hash: metadata_hash.to_hex().to_string(),
         size,
         entry_type: entry_type.to_string(),
         router,

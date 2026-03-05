@@ -1,4 +1,3 @@
-use crate::core::send::METADATA_ALPN;
 use crate::core::types::{
     get_or_create_secret, AppHandle, FileMetadata, ReceiveOptions, ReceiveResult,
 };
@@ -10,7 +9,7 @@ use iroh_blobs::{
         Store,
     },
     format::collection::Collection,
-    get::{request::get_hash_seq_and_sizes, GetError, Stats},
+    get::{request::{get_hash_seq_and_sizes, get_blob}, GetError, Stats},
     store::fs::FsStore,
     ticket::BlobTicket,
 };
@@ -66,53 +65,12 @@ fn emit_event_with_payload(app_handle: &AppHandle, event_name: &str, payload: &s
 }
 
 /// # Description
-/// Receives metadata. This function will connect to the sender, request metadata, and return it without downloading
-/// the file data.
-/// # Returns
-/// A `FileMetadata` struct containing the file name, size, thumbnail URL (if any), and description (if any).
+/// Receives metadata using the raw blob API.
 async fn receive_metadata<S: AsyncReadExt + Unpin>(
-    stream: &mut S,
-    app_handle: &AppHandle,
+    _stream: &mut S,
+    _app_handle: &AppHandle,
 ) -> anyhow::Result<FileMetadata> {
-    // Read the length of the metadata (first 4 bytes)
-    let mut len_buf = [0u8; 4];
-    stream
-        .read_exact(&mut len_buf)
-        .await
-        .map_err(|e| anyhow::anyhow!("metadata read length failed: {e}"))?;
-    let meta_len = u32::from_be_bytes(len_buf) as usize;
-    tracing::debug!(meta_len, "receive_metadata: length prefix received");
-
-    const MAX_METADATA_BYTES: usize = 8 * 1024 * 1024;
-    anyhow::ensure!(
-        meta_len > 0 && meta_len <= MAX_METADATA_BYTES,
-        "invalid metadata length: {meta_len}"
-    );
-
-    // Read the metadata JSON based on the length
-    let mut meta_buf = vec![0u8; meta_len];
-    stream
-        .read_exact(&mut meta_buf)
-        .await
-        .map_err(|e| anyhow::anyhow!("metadata read body failed: {e}"))?;
-    tracing::debug!(bytes = meta_buf.len(), "receive_metadata: body received");
-
-    // Deserialize the metadata from JSON
-    let metadata: FileMetadata = serde_json::from_slice(&meta_buf)
-        .map_err(|e| anyhow::anyhow!("metadata json decode failed: {e}"))?;
-
-    // Emit event with file metadata
-    if let Some(emitter) = app_handle {
-        if let Ok(payload) = serde_json::to_string(&metadata) {
-            if let Err(e) = emitter.emit_event_with_payload("receive-file-metadata", &payload) {
-                tracing::warn!("Failed to emit file metadata event: {}", e);
-            }
-        } else {
-            tracing::warn!("Failed to serialize file metadata for event payload");
-        }
-    }
-
-    Ok(metadata)
+    anyhow::bail!("Unused, see fetch_metadata");
 }
 
 pub async fn download(
@@ -152,33 +110,40 @@ pub async fn download(
     let db2 = db.clone();
 
     let fut = async move {
-        let hash_and_format = ticket.hash_and_format();
-        let local = db.remote().local(hash_and_format).await?;
+        // 1. First, connect and get the metadata blob to find the actual file hash
+        let connection = match endpoint
+            .connect(addr.clone(), iroh_blobs::protocol::ALPN)
+            .await
+        {
+            Ok(conn) => conn,
+            Err(e) => {
+                tracing::error!("Connection failed: {}", e);
+                return Err(anyhow::anyhow!("Connection failed: {}", e));
+            }
+        };
+
+        let metadata_hash = ticket.hash();
+        let metadata_bytes = get_blob(&connection, &metadata_hash, 10 * 1024 * 1024).await
+            .map_err(|e| anyhow::anyhow!("failed to download metadata in download: {:?}", e))?;
+            
+        let metadata: FileMetadata = serde_json::from_slice(&metadata_bytes)
+            .map_err(|e| anyhow::anyhow!("metadata json decode failed in download: {e}"))?;
+
+        // Extract actual file hash (the collection)
+        let file_hash = metadata.file_hash;
+        let file_hash_and_format = iroh_blobs::HashAndFormat {
+            hash: file_hash,
+            format: iroh_blobs::BlobFormat::HashSeq,
+        };
+
+        let local = db.remote().local(file_hash_and_format).await?;
 
         let (stats, total_files, payload_size) = if !local.is_complete() {
             // Emit receive-started event
             emit_event(&app_handle, "receive-started");
 
-            let connection = match endpoint
-                .connect(addr.clone(), iroh_blobs::protocol::ALPN)
-                .await
-            {
-                Ok(conn) => conn,
-                Err(e) => {
-                    tracing::error!("Connection failed: {}", e);
-                    tracing::error!("Error details: {:?}", e);
-                    tracing::error!("Tried to connect to node: {}", addr.id);
-                    tracing::error!("With relay: {:?}", addr.relay_urls().collect::<Vec<_>>());
-                    tracing::error!(
-                        "With direct addrs: {:?}",
-                        addr.ip_addrs().collect::<Vec<_>>()
-                    );
-                    return Err(anyhow::anyhow!("Connection failed: {}", e));
-                }
-            };
-
             let sizes_result =
-                get_hash_seq_and_sizes(&connection, &hash_and_format.hash, 1024 * 1024 * 32, None)
+                get_hash_seq_and_sizes(&connection, &file_hash, 1024 * 1024 * 32, None)
                     .await;
 
             let (_hash_seq, sizes) = match sizes_result {
@@ -261,7 +226,7 @@ pub async fn download(
             (Stats::default(), total_files, payload_bytes)
         };
 
-        let collection = Collection::load(hash_and_format.hash, db.as_ref()).await?;
+        let collection = Collection::load(file_hash, db.as_ref()).await?;
 
         // Extract file names from collection and emit them BEFORE export
         // This allows the UI to show file names during the export phase
@@ -318,11 +283,11 @@ pub async fn download(
 /// # Description
 /// Fetches metadata for a given ticket without downloading the file data. This is used to display file information (name, size, thumbnail, description) in the UI before the user decides to download.
 /// # Returns
-/// A `FileMetadata` struct containing the file name, size, thumbnail URL (if any), and description (if any).
+/// A tuple of `(FileMetadata, Option<Vec<u8>>)` where the second element is the preview bytes (if any).
 pub async fn fetch_metadata(
     ticket_str: String,
     options: ReceiveOptions,
-) -> anyhow::Result<FileMetadata> {
+) -> anyhow::Result<(FileMetadata, Option<Vec<u8>>)> {
     // parse ticket and extract address
     let ticket = BlobTicket::from_str(&ticket_str)?;
     let addr = ticket.addr().clone();
@@ -331,8 +296,7 @@ pub async fn fetch_metadata(
     let secret_key = get_or_create_secret()?;
 
     let mut builder = Endpoint::builder()
-        // METADATA_ALPN only to indicate a metadata fetch
-        .alpns(vec![METADATA_ALPN.to_vec()])
+        .alpns(vec![iroh_blobs::protocol::ALPN.to_vec()])
         .secret_key(secret_key)
         .relay_mode(options.relay_mode.into());
 
@@ -372,44 +336,44 @@ pub async fn fetch_metadata(
         let result = async {
             let connection = timeout(
                 Duration::from_secs(15),
-                endpoint.connect(target_addr, METADATA_ALPN),
+                endpoint.connect(target_addr, iroh_blobs::protocol::ALPN),
             )
             .await
             .map_err(|_| anyhow::anyhow!("metadata connect timeout"))??;
 
             tracing::debug!(attempt, path, "fetch_metadata: connection established");
 
-            let (mut send_stream, mut recv_stream) =
-                timeout(Duration::from_secs(20), connection.open_bi())
-                    .await
-                    .map_err(|_| anyhow::anyhow!("metadata open_bi timeout"))??;
+            let hash_and_format = ticket.hash_and_format();
+            
+            // 1. Download metadata blob
+            let metadata_bytes = get_blob(&connection, &hash_and_format.hash, 10 * 1024 * 1024).await
+                .map_err(|e| anyhow::anyhow!("failed to download metadata blob: {:?}", e))?;
+                
+            let metadata: FileMetadata = serde_json::from_slice(&metadata_bytes)
+                .map_err(|e| anyhow::anyhow!("metadata json decode failed: {e}"))?;
 
-            tracing::debug!(attempt, path, "fetch_metadata: bi stream opened");
+            // 2. If it has a preview hash, download it!
+            let mut preview_bytes = None;
+            if let Some(preview_h) = metadata.preview_hash {
+                // limit preview size to e.g. 5 MB
+                match timeout(
+                    Duration::from_secs(15),
+                    get_blob(&connection, &preview_h, 5 * 1024 * 1024)
+                ).await {
+                    Ok(Ok(bytes)) => {
+                        preview_bytes = Some(bytes);
+                    }
+                    Err(_) => tracing::warn!("preview download timed out"),
+                    Ok(Err(e)) => tracing::warn!("preview download failed: {}", e),
+                }
+            }
 
-            // Send 1 byte as a marker to indicate metadata request
-            timeout(Duration::from_secs(10), send_stream.write_all(&[1]))
-                .await
-                .map_err(|_| anyhow::anyhow!("metadata request write timeout"))??;
-
-            tracing::debug!(attempt, path, "fetch_metadata: request marker sent");
-
-            let metadata = timeout(
-                Duration::from_secs(20),
-                receive_metadata(&mut recv_stream, &None),
-            )
-            .await
-            .map_err(|_| anyhow::anyhow!("metadata read timeout"))??;
-
-            // Finish send_stream only AFTER receiving the metadata.
-            // signals the server that we are safely done and it can drop the connection.
-            let _ = send_stream.finish();
-
-            Ok(metadata)
+            Ok((metadata, preview_bytes))
         }
         .await;
 
         match result {
-            Ok(metadata) => {
+            Ok((metadata, preview_bytes)) => {
                 tracing::info!(
                     attempt,
                     path,
@@ -418,7 +382,7 @@ pub async fn fetch_metadata(
                     "fetch_metadata: received metadata"
                 );
                 endpoint.close().await;
-                return Ok(metadata);
+                return Ok((metadata, preview_bytes));
             }
             Err(err) => {
                 tracing::warn!(attempt, path, error = %err, "fetch_metadata attempt failed");

@@ -1,7 +1,7 @@
 use crate::features::thumbnail::generate_thumbnail;
 use crate::state::{AppStateMutex, ShareHandle};
 use sendme::{
-    core::types::FileMetadata, download, fetch_metadata, start_share, AddrInfoOptions, AppHandle,
+    core::types::FileMetadata, core::types::ShareConfig, download, fetch_metadata, start_share, AddrInfoOptions, AppHandle,
     EventEmitter, ReceiveOptions, RelayModeOption, SendOptions,
 };
 use std::path::Path;
@@ -96,10 +96,10 @@ pub async fn start_sharing(
         Some("inode/directory".to_string())
     };
 
-    let metadata = FileMetadata {
+    let metadata = ShareConfig {
         file_name,
         size,
-        thumbnail,
+        thumbnail_base64: thumbnail,
         description,
         mime_type,
     };
@@ -107,7 +107,7 @@ pub async fn start_sharing(
     tracing::info!(
         path_stem = ?path.file_stem(),
         size = metadata.size,
-        has_thumbnail = metadata.thumbnail.is_some(),
+        has_thumbnail = metadata.thumbnail_base64.is_some(),
         has_description = metadata.description.is_some(),
         "share metadata prepared"
     );
@@ -137,9 +137,20 @@ pub async fn start_sharing(
     }
 }
 
+/// Format returned to the frontend when fetching metadata
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendMetadata {
+    pub file_name: String,
+    pub size: u64,
+    pub thumbnail: Option<String>,
+    pub description: Option<String>,
+    pub mime_type: Option<String>,
+}
+
 /// Fetch metadata from sender by ticket, without starting file download.
 #[tauri::command]
-pub async fn fetch_ticket_metadata(ticket: String) -> Result<FileMetadata, String> {
+pub async fn fetch_ticket_metadata(ticket: String) -> Result<FrontendMetadata, String> {
     let ticket_len = ticket.len();
     tracing::info!(ticket_len, "fetch_ticket_metadata called");
 
@@ -151,15 +162,27 @@ pub async fn fetch_ticket_metadata(ticket: String) -> Result<FileMetadata, Strin
     };
 
     match fetch_metadata(ticket, options).await {
-        Ok(metadata) => {
+        Ok((metadata, preview_bytes)) => {
+            let thumbnail = preview_bytes.map(|b| {
+                base64::engine::general_purpose::STANDARD.encode(b)
+            });
+            
+            let frontend_metadata = FrontendMetadata {
+                file_name: metadata.file_name,
+                size: metadata.size,
+                thumbnail,
+                description: metadata.description,
+                mime_type: metadata.mime_type,
+            };
+
             tracing::info!(
-                file_name_len = metadata.file_name.len(),
-                size = metadata.size,
-                has_thumbnail = metadata.thumbnail.is_some(),
-                has_description = metadata.description.is_some(),
+                file_name_len = frontend_metadata.file_name.len(),
+                size = frontend_metadata.size,
+                has_thumbnail = frontend_metadata.thumbnail.is_some(),
+                has_description = frontend_metadata.description.is_some(),
                 "fetch_ticket_metadata succeeded"
             );
-            Ok(metadata)
+            Ok(frontend_metadata)
         }
         Err(e) => {
             tracing::warn!(error = %e, "fetch_ticket_metadata failed");
@@ -332,7 +355,7 @@ mod tests {
         fs::write(&temp_path, b"tauri metadata preview test payload")
             .expect("should create temp payload file");
 
-        let expected_metadata = FileMetadata {
+        let expected_metadata = FrontendMetadata {
             file_name: "preview-source.txt".to_string(),
             size: 123,
             thumbnail: Some("data:image/jpeg;base64,ZmFrZS10aHVtYg==".to_string()),
