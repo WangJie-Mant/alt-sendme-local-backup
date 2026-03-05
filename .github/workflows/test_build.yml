@@ -34,6 +34,7 @@ jobs:
 
       - name: Install WIX
         run: choco install wixtoolset -y
+        
       - name: Build Tauri
         run: |
           run: cargo tauri build --bundles nsis,msi
