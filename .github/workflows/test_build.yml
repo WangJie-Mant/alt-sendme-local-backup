@@ -36,7 +36,7 @@ jobs:
         run: choco install wixtoolset -y
       - name: Build Tauri
         run: |
-          cargo tauri build --release --bundles nsis,msi
+          run: cargo tauri build --bundles nsis,msi
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
