@@ -1,10 +1,9 @@
 use crate::core::types::{
-    apply_options, get_or_create_secret, AddrInfoOptions, AppHandle, FileMetadata, ShareConfig, SendOptions,
-    SendResult,
+    apply_options, get_or_create_secret, AddrInfoOptions, AppHandle, FileMetadata, SendOptions,
+    SendResult, ShareConfig,
 };
 use anyhow::Context;
 use data_encoding::HEXLOWER;
-use iroh::protocol::{AcceptError, ProtocolHandler};
 use iroh::{discovery::pkarr::PkarrPublisher, Endpoint, RelayMode};
 use iroh_blobs::{
     api::{
@@ -20,8 +19,8 @@ use iroh_blobs::{
 use n0_future::StreamExt;
 use n0_future::{task::AbortOnDropHandle, BufferedStreamExt};
 use rand::Rng;
-use std::io::ErrorKind;
 use std::{
+    collections::HashSet,
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -142,7 +141,7 @@ pub async fn start_share(
         let dt = t0.elapsed();
 
         let (file_temp_tag, size, _collection) = import_result;
-        
+
         let mut preview_hash = None;
         if let Some(config) = &metadata {
             if let Some(b64) = &config.thumbnail_base64 {
@@ -157,23 +156,39 @@ pub async fn start_share(
         let actual_metadata = FileMetadata {
             file_hash: file_temp_tag.hash(),
             preview_hash,
-            file_name: metadata.as_ref().map(|m| m.file_name.clone()).unwrap_or_else(|| "Unknown".to_string()),
+            file_name: metadata
+                .as_ref()
+                .map(|m| m.file_name.clone())
+                .unwrap_or_else(|| "Unknown".to_string()),
             size,
             mime_type: metadata.as_ref().and_then(|m| m.mime_type.clone()),
-            preview_mime: metadata.as_ref().and_then(|m| m.thumbnail_base64.as_ref().map(|_| "image/jpeg".to_string())),
+            preview_mime: metadata.as_ref().and_then(|m| {
+                m.thumbnail_base64
+                    .as_ref()
+                    .map(|_| "image/jpeg".to_string())
+            }),
             description: metadata.as_ref().and_then(|m| m.description.clone()),
         };
 
         let metadata_bytes = serde_json::to_vec(&actual_metadata)?;
-        let metadata_tag = blobs.store().add_bytes(metadata_bytes).await
+        let metadata_tag = blobs
+            .store()
+            .add_bytes(metadata_bytes)
+            .await
             .context("failed to add metadata blob")?;
         let metadata_hash = metadata_tag.hash;
-        
+
+        let mut non_payload_hashes = HashSet::from([metadata_hash]);
+        if let Some(preview_hash) = preview_hash {
+            non_payload_hashes.insert(preview_hash);
+        }
+
         let progress_handle = n0_future::task::spawn(show_provide_progress_with_logging(
             progress_rx,
             app_handle_clone,
             size,
             entry_type_for_progress,
+            non_payload_hashes,
         ));
 
         let router = iroh::protocol::Router::builder(endpoint)
@@ -419,6 +434,7 @@ async fn show_provide_progress_with_logging(
     app_handle: AppHandle,
     total_file_size: u64,
     entry_type: String,
+    non_payload_hashes: HashSet<iroh_blobs::Hash>,
 ) -> anyhow::Result<()> {
     use n0_future::FuturesUnordered;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -457,6 +473,14 @@ async fn show_provide_progress_with_logging(
                     iroh_blobs::provider::events::ProviderMessage::ConnectionClosed(_msg) => {
                     }
                     iroh_blobs::provider::events::ProviderMessage::GetRequestReceivedNotify(msg) => {
+                        if non_payload_hashes.contains(&msg.request.hash) {
+                            let mut rx = msg.rx;
+                            tokio::spawn(async move {
+                                while let Ok(Some(_)) = rx.recv().await {}
+                            });
+                            continue;
+                        }
+
                         let connection_id = msg.connection_id;
                         let request_id = msg.request_id;
 

@@ -9,7 +9,10 @@ use iroh_blobs::{
         Store,
     },
     format::collection::Collection,
-    get::{request::{get_hash_seq_and_sizes, get_blob}, GetError, Stats},
+    get::{
+        request::{get_blob, get_hash_seq_and_sizes},
+        GetError, Stats,
+    },
     store::fs::FsStore,
     ticket::BlobTicket,
 };
@@ -18,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::time::Instant;
 use tokio::{
-    io::AsyncReadExt,
     select,
     time::{timeout, Duration},
 };
@@ -62,15 +64,6 @@ fn emit_event_with_payload(app_handle: &AppHandle, event_name: &str, payload: &s
             tracing::warn!("Failed to emit event {} with payload: {}", event_name, e);
         }
     }
-}
-
-/// # Description
-/// Receives metadata using the raw blob API.
-async fn receive_metadata<S: AsyncReadExt + Unpin>(
-    _stream: &mut S,
-    _app_handle: &AppHandle,
-) -> anyhow::Result<FileMetadata> {
-    anyhow::bail!("Unused, see fetch_metadata");
 }
 
 pub async fn download(
@@ -123,9 +116,10 @@ pub async fn download(
         };
 
         let metadata_hash = ticket.hash();
-        let metadata_bytes = get_blob(&connection, &metadata_hash, 10 * 1024 * 1024).await
+        let metadata_bytes = get_blob(connection.clone(), metadata_hash)
+            .await
             .map_err(|e| anyhow::anyhow!("failed to download metadata in download: {:?}", e))?;
-            
+
         let metadata: FileMetadata = serde_json::from_slice(&metadata_bytes)
             .map_err(|e| anyhow::anyhow!("metadata json decode failed in download: {e}"))?;
 
@@ -143,8 +137,7 @@ pub async fn download(
             emit_event(&app_handle, "receive-started");
 
             let sizes_result =
-                get_hash_seq_and_sizes(&connection, &file_hash, 1024 * 1024 * 32, None)
-                    .await;
+                get_hash_seq_and_sizes(&connection, &file_hash, 1024 * 1024 * 32, None).await;
 
             let (_hash_seq, sizes) = match sizes_result {
                 Ok((hash_seq, sizes)) => (hash_seq, sizes),
@@ -344,11 +337,12 @@ pub async fn fetch_metadata(
             tracing::debug!(attempt, path, "fetch_metadata: connection established");
 
             let hash_and_format = ticket.hash_and_format();
-            
+
             // 1. Download metadata blob
-            let metadata_bytes = get_blob(&connection, &hash_and_format.hash, 10 * 1024 * 1024).await
+            let metadata_bytes = get_blob(connection.clone(), hash_and_format.hash)
+                .await
                 .map_err(|e| anyhow::anyhow!("failed to download metadata blob: {:?}", e))?;
-                
+
             let metadata: FileMetadata = serde_json::from_slice(&metadata_bytes)
                 .map_err(|e| anyhow::anyhow!("metadata json decode failed: {e}"))?;
 
@@ -356,12 +350,9 @@ pub async fn fetch_metadata(
             let mut preview_bytes = None;
             if let Some(preview_h) = metadata.preview_hash {
                 // limit preview size to e.g. 5 MB
-                match timeout(
-                    Duration::from_secs(15),
-                    get_blob(&connection, &preview_h, 5 * 1024 * 1024)
-                ).await {
+                match timeout(Duration::from_secs(15), get_blob(connection, preview_h)).await {
                     Ok(Ok(bytes)) => {
-                        preview_bytes = Some(bytes);
+                        preview_bytes = Some(bytes.to_vec());
                     }
                     Err(_) => tracing::warn!("preview download timed out"),
                     Ok(Err(e)) => tracing::warn!("preview download failed: {}", e),
@@ -462,7 +453,7 @@ mod tests {
     async fn test_fetch_metadata_e2e() {
         use crate::core::send::start_share;
         use crate::core::types::{
-            AddrInfoOptions, FileMetadata, ReceiveOptions, RelayModeOption, SendOptions,
+            AddrInfoOptions, ReceiveOptions, RelayModeOption, SendOptions, ShareConfig,
         };
         use std::io::Write;
         use tempfile::NamedTempFile;
@@ -471,12 +462,14 @@ mod tests {
         let mut temp_file = NamedTempFile::new().unwrap();
         write!(temp_file, "metadata e2e test content").unwrap();
         let temp_path = temp_file.path().to_path_buf();
+        let expected_size = std::fs::metadata(&temp_path).unwrap().len();
+        let expected_preview_bytes = b"e2e_test_thumbnail".to_vec();
 
         // Setup metadata
-        let expected_metadata = FileMetadata {
+        let expected_metadata = ShareConfig {
             file_name: "test_e2e_file.txt".into(),
-            size: 25,
-            thumbnail: Some("data:image/jpeg;base64,e2e_test_thumbnail=".into()),
+            size: expected_size,
+            thumbnail_base64: Some(data_encoding::BASE64.encode(&expected_preview_bytes)),
             description: Some("E2E test description for file".into()),
             mime_type: Some("text/plain".into()),
         };
@@ -505,12 +498,14 @@ mod tests {
             .await
             .expect("Failed to fetch metadata from node");
 
+        let (fetched_metadata, fetched_preview_bytes) = fetched;
+
         // Verify received data matches exactly
-        assert_eq!(fetched.file_name, expected_metadata.file_name);
-        assert_eq!(fetched.size, expected_metadata.size);
-        assert_eq!(fetched.thumbnail, expected_metadata.thumbnail);
-        assert_eq!(fetched.description, expected_metadata.description);
-        assert_eq!(fetched.mime_type, expected_metadata.mime_type);
+        assert_eq!(fetched_metadata.file_name, expected_metadata.file_name);
+        assert_eq!(fetched_metadata.size, expected_size);
+        assert_eq!(fetched_metadata.description, expected_metadata.description);
+        assert_eq!(fetched_metadata.mime_type, expected_metadata.mime_type);
+        assert_eq!(fetched_preview_bytes, Some(expected_preview_bytes));
     }
 
     #[test]

@@ -14,6 +14,8 @@ const readmePath = path.join(__dirname, '../README.md')
 
 const rootPackageJson = JSON.parse(fs.readFileSync(rootPackageJsonPath, 'utf8'))
 const sourceVersion = rootPackageJson.version
+const semverPattern =
+	'[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?'
 
 if (!sourceVersion) {
 	console.error('Error: No version found in src-tauri/package.json')
@@ -28,13 +30,17 @@ const versions = {
 	).version,
 	'src-tauri/Cargo.toml': (() => {
 		const cargoToml = fs.readFileSync(cargoTomlPath, 'utf8')
-		const match = cargoToml.match(/^version = "([\d.]+)"/m)
+		const match = cargoToml.match(
+			new RegExp(`^version = "(${semverPattern})"`, 'm')
+		)
 		return match ? match[1] : null
 	})(),
 	'README.md badge': (() => {
 		const readme = fs.readFileSync(readmePath, 'utf8')
 		const match = readme.match(
-			/\[badge-version\]:\s*https:\/\/img\.shields\.io\/badge\/version-([\d.]+)-blue/
+			new RegExp(
+				`\\[badge-version\\]:\\s*https:\\/\\/img\\.shields\\.io\\/badge\\/version-(${semverPattern})-blue`
+			)
 		)
 		return match ? match[1] : null
 	})(),

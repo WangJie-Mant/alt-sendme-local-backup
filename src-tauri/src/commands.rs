@@ -1,7 +1,8 @@
 use crate::features::thumbnail::generate_thumbnail;
 use crate::state::{AppStateMutex, ShareHandle};
+use base64::Engine as _;
 use sendme::{
-    core::types::FileMetadata, core::types::ShareConfig, download, fetch_metadata, start_share, AddrInfoOptions, AppHandle,
+    core::types::ShareConfig, download, fetch_metadata, start_share, AddrInfoOptions, AppHandle,
     EventEmitter, ReceiveOptions, RelayModeOption, SendOptions,
 };
 use std::path::Path;
@@ -139,7 +140,6 @@ pub async fn start_sharing(
 
 /// Format returned to the frontend when fetching metadata
 #[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct FrontendMetadata {
     pub file_name: String,
     pub size: u64,
@@ -163,10 +163,9 @@ pub async fn fetch_ticket_metadata(ticket: String) -> Result<FrontendMetadata, S
 
     match fetch_metadata(ticket, options).await {
         Ok((metadata, preview_bytes)) => {
-            let thumbnail = preview_bytes.map(|b| {
-                base64::engine::general_purpose::STANDARD.encode(b)
-            });
-            
+            let thumbnail =
+                preview_bytes.map(|b| base64::engine::general_purpose::STANDARD.encode(b));
+
             let frontend_metadata = FrontendMetadata {
                 file_name: metadata.file_name,
                 size: metadata.size,
@@ -354,13 +353,24 @@ mod tests {
         let temp_path = unique_temp_file("sendme-tauri-meta");
         fs::write(&temp_path, b"tauri metadata preview test payload")
             .expect("should create temp payload file");
+        let expected_size = fs::metadata(&temp_path)
+            .expect("should read temp payload metadata")
+            .len();
 
-        let expected_metadata = FrontendMetadata {
+        let share_metadata = ShareConfig {
             file_name: "preview-source.txt".to_string(),
-            size: 123,
-            thumbnail: Some("data:image/jpeg;base64,ZmFrZS10aHVtYg==".to_string()),
+            size: expected_size,
+            thumbnail_base64: Some("ZmFrZS10aHVtYg==".to_string()),
             description: Some("metadata from tauri command test".to_string()),
             mime_type: Some("text/plain".to_string()),
+        };
+
+        let expected_metadata = FrontendMetadata {
+            file_name: share_metadata.file_name.clone(),
+            size: expected_size,
+            thumbnail: share_metadata.thumbnail_base64.clone(),
+            description: share_metadata.description.clone(),
+            mime_type: share_metadata.mime_type.clone(),
         };
 
         let options = SendOptions {
@@ -370,14 +380,9 @@ mod tests {
             magic_ipv6_addr: None,
         };
 
-        let share = start_share(
-            temp_path.clone(),
-            options,
-            None,
-            Some(expected_metadata.clone()),
-        )
-        .await
-        .expect("start_share should succeed");
+        let share = start_share(temp_path.clone(), options, None, Some(share_metadata))
+            .await
+            .expect("start_share should succeed");
 
         let fetched = fetch_ticket_metadata(share.ticket.clone())
             .await

@@ -14,6 +14,8 @@ const readmePath = path.join(__dirname, '../README.md')
 
 const rootPackageJson = JSON.parse(fs.readFileSync(rootPackageJsonPath, 'utf8'))
 const version = rootPackageJson.version
+const semverPattern =
+	'[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?'
 
 if (!version) {
 	console.error('Error: No version found in package.json')
@@ -25,14 +27,26 @@ tauriConfig.version = version
 fs.writeFileSync(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`)
 
 let cargoToml = fs.readFileSync(cargoTomlPath, 'utf8')
-cargoToml = cargoToml.replace(/^version = "[\d.]+"/m, `version = "${version}"`)
+cargoToml = cargoToml.replace(
+	new RegExp(`^version = "${semverPattern}"`, 'm'),
+	`version = "${version}"`
+)
 fs.writeFileSync(cargoTomlPath, cargoToml)
 
 let readme = fs.readFileSync(readmePath, 'utf8')
-readme = readme.replace(/\/download\/v[\d.]+/g, `/download/v${version}`)
-readme = readme.replace(/AltSendme_[\d.]+_/g, `AltSendme_${version}_`)
 readme = readme.replace(
-	/\[badge-version\]:\s*https:\/\/img\.shields\.io\/badge\/version-[\d.]+-blue/g,
+	new RegExp(`/download/v${semverPattern}`, 'g'),
+	`/download/v${version}`
+)
+readme = readme.replace(
+	new RegExp(`AltSendme_${semverPattern}_`, 'g'),
+	`AltSendme_${version}_`
+)
+readme = readme.replace(
+	new RegExp(
+		`\\[badge-version\\]:\\s*https:\\/\\/img\\.shields\\.io\\/badge\\/version-${semverPattern}-blue`,
+		'g'
+	),
 	`[badge-version]: https://img.shields.io/badge/version-${version}-blue`
 )
 
