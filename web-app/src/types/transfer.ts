@@ -22,7 +22,6 @@ export interface TicketPreviewMetadata {
 	fileName: string
 	size: number
 	thumbnail?: string
-	description?: string
 	mimeType?: string
 }
 

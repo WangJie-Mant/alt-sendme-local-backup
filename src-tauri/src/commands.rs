@@ -48,7 +48,6 @@ pub async fn get_file_size(path: String) -> Result<u64, String> {
 #[tauri::command]
 pub async fn start_sharing(
     path: String,
-    description: Option<String>,
     state: State<'_, AppStateMutex>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
@@ -100,7 +99,6 @@ pub async fn start_sharing(
         file_name,
         size,
         thumbnail,
-        description,
         mime_type,
     };
 
@@ -108,7 +106,6 @@ pub async fn start_sharing(
         path_stem = ?path.file_stem(),
         size = metadata.size,
         has_thumbnail = metadata.thumbnail.is_some(),
-        has_description = metadata.description.is_some(),
         "share metadata prepared"
     );
 
@@ -156,7 +153,6 @@ pub async fn fetch_ticket_metadata(ticket: String) -> Result<FileMetadata, Strin
                 file_name_len = metadata.file_name.len(),
                 size = metadata.size,
                 has_thumbnail = metadata.thumbnail.is_some(),
-                has_description = metadata.description.is_some(),
                 "fetch_ticket_metadata succeeded"
             );
             Ok(metadata)
@@ -336,7 +332,6 @@ mod tests {
             file_name: "preview-source.txt".to_string(),
             size: 123,
             thumbnail: Some("data:image/jpeg;base64,ZmFrZS10aHVtYg==".to_string()),
-            description: Some("metadata from tauri command test".to_string()),
             mime_type: Some("text/plain".to_string()),
         };
 
@@ -363,7 +358,6 @@ mod tests {
         assert_eq!(fetched.file_name, expected_metadata.file_name);
         assert_eq!(fetched.size, expected_metadata.size);
         assert_eq!(fetched.thumbnail, expected_metadata.thumbnail);
-        assert_eq!(fetched.description, expected_metadata.description);
         assert_eq!(fetched.mime_type, expected_metadata.mime_type);
 
         drop(share);
