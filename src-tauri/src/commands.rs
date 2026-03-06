@@ -49,7 +49,6 @@ pub async fn get_file_size(path: String) -> Result<u64, String> {
 #[tauri::command]
 pub async fn start_sharing(
     path: String,
-    description: Option<String>,
     state: State<'_, AppStateMutex>,
     app_handle: tauri::AppHandle,
 ) -> Result<String, String> {
@@ -101,7 +100,6 @@ pub async fn start_sharing(
         file_name,
         size,
         thumbnail_base64: thumbnail,
-        description,
         mime_type,
     };
 
@@ -109,7 +107,6 @@ pub async fn start_sharing(
         path_stem = ?path.file_stem(),
         size = metadata.size,
         has_thumbnail = metadata.thumbnail_base64.is_some(),
-        has_description = metadata.description.is_some(),
         "share metadata prepared"
     );
 
@@ -144,7 +141,6 @@ pub struct FrontendMetadata {
     pub file_name: String,
     pub size: u64,
     pub thumbnail: Option<String>,
-    pub description: Option<String>,
     pub mime_type: Option<String>,
 }
 
@@ -170,7 +166,6 @@ pub async fn fetch_ticket_metadata(ticket: String) -> Result<FrontendMetadata, S
                 file_name: metadata.file_name,
                 size: metadata.size,
                 thumbnail,
-                description: metadata.description,
                 mime_type: metadata.mime_type,
             };
 
@@ -178,7 +173,6 @@ pub async fn fetch_ticket_metadata(ticket: String) -> Result<FrontendMetadata, S
                 file_name_len = frontend_metadata.file_name.len(),
                 size = frontend_metadata.size,
                 has_thumbnail = frontend_metadata.thumbnail.is_some(),
-                has_description = frontend_metadata.description.is_some(),
                 "fetch_ticket_metadata succeeded"
             );
             Ok(frontend_metadata)
@@ -361,7 +355,6 @@ mod tests {
             file_name: "preview-source.txt".to_string(),
             size: expected_size,
             thumbnail_base64: Some("ZmFrZS10aHVtYg==".to_string()),
-            description: Some("metadata from tauri command test".to_string()),
             mime_type: Some("text/plain".to_string()),
         };
 
@@ -369,7 +362,6 @@ mod tests {
             file_name: share_metadata.file_name.clone(),
             size: expected_size,
             thumbnail: share_metadata.thumbnail_base64.clone(),
-            description: share_metadata.description.clone(),
             mime_type: share_metadata.mime_type.clone(),
         };
 
@@ -391,7 +383,6 @@ mod tests {
         assert_eq!(fetched.file_name, expected_metadata.file_name);
         assert_eq!(fetched.size, expected_metadata.size);
         assert_eq!(fetched.thumbnail, expected_metadata.thumbnail);
-        assert_eq!(fetched.description, expected_metadata.description);
         assert_eq!(fetched.mime_type, expected_metadata.mime_type);
 
         drop(share);

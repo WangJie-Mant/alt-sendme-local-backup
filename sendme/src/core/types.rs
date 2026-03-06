@@ -77,13 +77,12 @@ pub struct ShareConfig {
     pub file_name: String,
     pub size: u64,
     pub thumbnail_base64: Option<String>,
-    pub description: Option<String>,
     pub mime_type: Option<String>,
 }
 
 /// # Description
 /// Represents metadata about a file being shared,
-/// including file_name, size, optional preview hash, description, and MIME type.
+/// including file_name, size, optional preview hash, and MIME type.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileMetadata {
     pub file_hash: iroh_blobs::Hash,
@@ -95,8 +94,6 @@ pub struct FileMetadata {
     pub mime_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_mime: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub description: Option<String>,
 }
 
 #[derive(

@@ -274,7 +274,7 @@ pub async fn download(
 }
 
 /// # Description
-/// Fetches metadata for a given ticket without downloading the file data. This is used to display file information (name, size, thumbnail, description) in the UI before the user decides to download.
+/// Fetches metadata for a given ticket without downloading the file data. This is used to display file information (name, size, thumbnail) in the UI before the user decides to download.
 /// # Returns
 /// A tuple of `(FileMetadata, Option<Vec<u8>>)` where the second element is the preview bytes (if any).
 pub async fn fetch_metadata(
@@ -470,7 +470,6 @@ mod tests {
             file_name: "test_e2e_file.txt".into(),
             size: expected_size,
             thumbnail_base64: Some(data_encoding::BASE64.encode(&expected_preview_bytes)),
-            description: Some("E2E test description for file".into()),
             mime_type: Some("text/plain".into()),
         };
 
@@ -503,7 +502,6 @@ mod tests {
         // Verify received data matches exactly
         assert_eq!(fetched_metadata.file_name, expected_metadata.file_name);
         assert_eq!(fetched_metadata.size, expected_size);
-        assert_eq!(fetched_metadata.description, expected_metadata.description);
         assert_eq!(fetched_metadata.mime_type, expected_metadata.mime_type);
         assert_eq!(fetched_preview_bytes, Some(expected_preview_bytes));
     }

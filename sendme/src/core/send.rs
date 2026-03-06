@@ -167,7 +167,6 @@ pub async fn start_share(
                     .as_ref()
                     .map(|_| "image/jpeg".to_string())
             }),
-            description: metadata.as_ref().and_then(|m| m.description.clone()),
         };
 
         let metadata_bytes = serde_json::to_vec(&actual_metadata)?;
