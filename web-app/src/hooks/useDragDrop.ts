@@ -20,7 +20,10 @@ export interface UseDragDropReturn {
 }
 
 export function useDragDrop(
-	onFileSelect: (path: string) => void
+	onFileSelect: (
+		path: string,
+		pathType?: 'file' | 'directory'
+	) => void | Promise<void>
 ): UseDragDropReturn {
 	const { t } = useTranslation()
 	const [isDragActive, setIsDragActive] = useState(false)
@@ -67,7 +70,7 @@ export function useDragDrop(
 			})
 
 			if (selected) {
-				onFileSelect(selected)
+				void onFileSelect(selected, 'file')
 			}
 		} catch (error) {
 			console.error('Failed to open file dialog:', error)
@@ -87,7 +90,7 @@ export function useDragDrop(
 			})
 
 			if (selected) {
-				onFileSelect(selected)
+				void onFileSelect(selected, 'directory')
 			}
 		} catch (error) {
 			console.error('Failed to open folder dialog:', error)
@@ -114,7 +117,7 @@ export function useDragDrop(
 
 					if (event.payload?.paths && event.payload.paths.length > 0) {
 						const path = event.payload.paths[0]
-						onFileSelect(path)
+						void onFileSelect(path)
 					}
 				}
 			)
